@@ -5,6 +5,20 @@
 #include <mpi.h>
 #include "numgen.c"
 
+#define PACKETSIZE 10
+#define DATA 0
+#define RESULT 1
+#define FINISH 2
+
+int check_prime(long number) {
+  for(long i=2; i*i <= number; i++){
+    if(number % i == 0){
+        return 0;
+    }
+  }
+  return 1;
+}
+
 int main(int argc,char **argv) {
 
   Args ins__args;
@@ -17,12 +31,16 @@ int main(int argc,char **argv) {
 
   // variables
   int myrank,nproc;
-  unsigned long int *numbers;
+  long *numbers;
+  long *numbers_filled;
+  long numbers_filled_size = inputArgument + (PACKETSIZE - (inputArgument % PACKETSIZE));
+  long iterator = 0;
+  long *sublist;
+  long *resulttemp;
   MPI_Request *requests;
   int requestcount = 0;
   int requestcompleted;
-  int sentcount = 0;
-  int recvcount = 0;
+  long result;
   MPI_Status status;
 
   MPI_Init(&argc,&argv);
@@ -36,6 +54,15 @@ int main(int argc,char **argv) {
     gettimeofday(&ins__tstart, NULL);
 	  numbers = (unsigned long int*)malloc(inputArgument * sizeof(unsigned long int));
   	numgen(inputArgument, numbers);
+
+    numbers_filled = (unsigned long int*)malloc(numbers_filled_size * sizeof(unsigned long int));
+    for(int i=0; i<numbers_filled_size; i++){
+      if(i<inputArgument){
+        numbers_filled[i] = numbers[i];
+      } else {
+        numbers_filled[i] = 0;
+      }
+    }
   }
 
   // run your computations here (including MPI communication)
@@ -49,15 +76,7 @@ int main(int argc,char **argv) {
         return -1;
     }
 
-    ranges = (double *)malloc(4 * (nproc - 1) * sizeof(double));
-    if (!ranges)
-    {
-        printf ("\nNot enough memory");
-        MPI_Finalize();
-        return -1;
-    }
-
-    resulttemp = (double *)malloc((nproc - 1) * sizeof (double));
+    resulttemp = (long *)malloc((nproc - 1) * sizeof (long));
     if (!resulttemp)
     {
         printf ("\nNot enough memory");
@@ -66,38 +85,30 @@ int main(int argc,char **argv) {
     }
 
     // first distribute some ranges to all slaves
-    for (i = 1; i < nproc; i++)
+    for(int i = 1; i < nproc; i++)
     {
-        range[1] = range[0] + RANGESIZE;
-        MPI_Send(range, 2, MPI_DOUBLE, i, DATA, MPI_COMM_WORLD);
-        sentcount++;
-        range[0] = range[1];
+        MPI_Send(numbers_filled + iterator, PACKETSIZE, MPI_LONG, i, DATA, MPI_COMM_WORLD);
+        iterator += PACKETSIZE;
     }
 
     // the first nproc requests will be for receiving, the latter ones for sending
-    for (i = 0; i < 2 * (nproc - 1); i++) {
+    for (int i = 0; i < 2 * (nproc - 1); i++) {
       requests[i] = MPI_REQUEST_NULL;	// none active at this point
     }
       
     // start receiving for results from the slaves
-    for (i = 1; i < nproc; i++) {
-      MPI_Irecv(&(resulttemp[i - 1]), 1, MPI_DOUBLE, i, RESULT, MPI_COMM_WORLD, &(requests[i - 1]));
+    for (int i = 1; i < nproc; i++) {
+      MPI_Irecv(&(resulttemp[i - 1]), 1, MPI_LONG, i, RESULT, MPI_COMM_WORLD, &(requests[i - 1]));
     }
 
     // start sending new data parts to the slaves
-    for (i = 1; i < nproc; i++)
+    for (int i = 1; i < nproc; i++)
     {
-      range[1] = range[0] + RANGESIZE;
-      ranges[2 * i - 2] = range[0];
-      ranges[2 * i - 1] = range[1];
-
       // send it to process i
-      MPI_Isend(&(ranges[2 * i - 2]), 2, MPI_DOUBLE, i, DATA, MPI_COMM_WORLD, &(requests[nproc - 2 + i]));
-
-      sentcount++;
-      range[0] = range[1];
+      MPI_Isend(numbers_filled + iterator, PACKETSIZE, MPI_LONG, i, DATA, MPI_COMM_WORLD, &(requests[nproc - 2 + i]));
+      iterator++;
     }
-    while (range[1] < b)
+    while (iterator < numbers_filled_size)
     {
         // wait for completion of any of the requests
         MPI_Waitany(2 * nproc - 2, requests, &requestcompleted, MPI_STATUS_IGNORE);
@@ -107,52 +118,39 @@ int main(int argc,char **argv) {
         if (requestcompleted < (nproc - 1))
         {
           result += resulttemp[requestcompleted];
-          recvcount++;
 
           // first check if the send has terminated
-          MPI_Wait (&(requests[nproc - 1 + requestcompleted]), MPI_STATUS_IGNORE);
+          MPI_Wait(&(requests[nproc - 1 + requestcompleted]), MPI_STATUS_IGNORE);
           // now send some new data portion to this process
-          range[1] = range[0] + RANGESIZE;
-
-          if (range[1] > b)
-            range[1] = b;
-
-          ranges[2 * requestcompleted] = range[0];
-          ranges[2 * requestcompleted + 1] = range[1];
-          MPI_Isend (&(ranges[2 * requestcompleted]), 2, MPI_DOUBLE, requestcompleted + 1, DATA, MPI_COMM_WORLD, &(requests[nproc - 1 + requestcompleted]));
-          sentcount++;
-          range[0] = range[1];
+          MPI_Isend(numbers_filled + iterator, PACKETSIZE, MPI_LONG, requestcompleted + 1, DATA, MPI_COMM_WORLD, &(requests[nproc - 1 + requestcompleted]));
+          iterator++;
 
           // now issue a corresponding recv
-          MPI_Irecv (&(resulttemp[requestcompleted]), 1, MPI_DOUBLE, requestcompleted + 1, RESULT, MPI_COMM_WORLD, &(requests[requestcompleted]));
+          MPI_Irecv(&(resulttemp[requestcompleted]), 1, MPI_LONG, requestcompleted + 1, RESULT, MPI_COMM_WORLD, &(requests[requestcompleted]));
         }
     }
 	// now send the FINISHING ranges to the slaves
 	// shut down the slaves
-	range[0] = range[1];
-	for (i = 1; i < nproc; i++)
+	for (int i = 1; i < nproc; i++)
 	{
-    ranges[2 * i - 4 + 2 * nproc] = range[0];
-    ranges[2 * i - 3 + 2 * nproc] = range[1];
-    MPI_Isend (range, 2, MPI_DOUBLE, i, DATA, MPI_COMM_WORLD, &(requests[2 * nproc - 3 + i]));
+    MPI_Isend(numbers_filled + iterator, PACKETSIZE, MPI_LONG, i, DATA, MPI_COMM_WORLD, &(requests[2 * nproc - 3 + i]));
 	}
 
 	// now receive results from the processes - that is finalize the pending requests
-  MPI_Waitall (3 * nproc - 3, requests, MPI_STATUSES_IGNORE);
+  MPI_Waitall(3 * nproc - 3, requests, MPI_STATUSES_IGNORE);
 	// now simply add the results
-	for (i = 0; i < (nproc - 1); i++)
+	for (int i = 0; i < (nproc - 1); i++)
 	{
     result += resulttemp[i];
 	}
 	// now receive results for the initial sends
-  for (i = 0; i < (nproc - 1); i++)
+  for (int i = 0; i < (nproc - 1); i++)
 	{
-    MPI_Recv (&(resulttemp[i]), 1, MPI_DOUBLE, i + 1, RESULT, MPI_COMM_WORLD, &status);
+    MPI_Recv(&(resulttemp[i]), 1, MPI_DOUBLE, i + 1, RESULT, MPI_COMM_WORLD, &status);
     result += resulttemp[i];
-    recvcount++;
 	}
 	// now display the result
-	printf ("\nHi, I am process 0, the result is %f\n", result);
+	printf ("\nHi, I am process 0, the result is %ld\n", result);
   } else //slave
   {		
     requests = (MPI_Request *) malloc (2 * sizeof (MPI_Request));
@@ -165,16 +163,9 @@ int main(int argc,char **argv) {
     }
 
     requests[0] = requests[1] = MPI_REQUEST_NULL;
-    ranges = (double *) malloc (2 * sizeof (double));
+    sublist = (long *)malloc(PACKETSIZE * sizeof(long));
 
-    if (!ranges)
-    {
-        printf ("\nNot enough memory");
-        MPI_Finalize ();
-        return -1;
-    }
-
-    resulttemp = (double *) malloc (2 * sizeof (double));
+    resulttemp = (long *) malloc (2 * sizeof (long));
     if (!resulttemp)
     {
         printf ("\nNot enough memory");
@@ -183,29 +174,32 @@ int main(int argc,char **argv) {
     }
 
 	  // first receive the initial data
-    MPI_Recv (range, 2, MPI_DOUBLE, 0, DATA, MPI_COMM_WORLD, &status);
-    while (range[0] < range[1])
+    MPI_Recv (sublist, PACKETSIZE, MPI_LONG, 0, DATA, MPI_COMM_WORLD, &status);
+    while (iterator < numbers_filled_size)
 	  {			
       // if there is some data to process
 	    // before computing the next part start receiving a new data part
-	    MPI_Irecv (ranges, 2, MPI_DOUBLE, 0, DATA, MPI_COMM_WORLD, &(requests[0]));
+	    MPI_Irecv(sublist, PACKETSIZE, MPI_LONG, 0, DATA, MPI_COMM_WORLD, &(requests[0]));
+      unsigned long int slave_result = 0;
+      for(int i = 0; i < PACKETSIZE; i++)
+      {
+        slave_result += check_prime(sublist[i]);
+      }
 
 	    // compute my part
-      resulttemp[1] = SimpleIntegration (range[0], range[1]);
+      resulttemp[1] = slave_result;
 
       // now finish receiving the new part
 	    // and finish sending the previous results back to the master
-      MPI_Waitall (2, requests, MPI_STATUSES_IGNORE);
-	    range[0] = ranges[0];
-	    range[1] = ranges[1];
+      MPI_Waitall(2, requests, MPI_STATUSES_IGNORE);
 	    resulttemp[0] = resulttemp[1];
 
 	    // and start sending the results back
-      MPI_Isend (&resulttemp[0], 1, MPI_DOUBLE, 0, RESULT, MPI_COMM_WORLD, &(requests[1]));
+      MPI_Isend(&resulttemp[0], 1, MPI_LONG, 0, RESULT, MPI_COMM_WORLD, &(requests[1]));
 	}
 
 	  // now finish sending the last results to the master
-	 MPI_Wait (&(requests[1]), MPI_STATUS_IGNORE);
+	 MPI_Wait(&(requests[1]), MPI_STATUS_IGNORE);
   }
 
   // synchronize/finalize your computations
