@@ -40,7 +40,7 @@ int main(int argc,char **argv) {
   MPI_Request *requests;
   int requestcount = 0;
   int requestcompleted;
-  long result;
+  long result = 0;
   long numberssize = inputArgument + (PACKETSIZE - (inputArgument % PACKETSIZE));
 
   MPI_Status status;
@@ -66,8 +66,9 @@ int main(int argc,char **argv) {
   	numgen(inputArgument, numbers);
 
     for(int i=inputArgument; i<numberssize; i++){
-      numbers[i] = 0;
+      numbers[i] = 4;
     }
+
   }
 
   // run your computations here (including MPI communication)
@@ -102,7 +103,7 @@ int main(int argc,char **argv) {
     {
       // send it to process i
       MPI_Isend(numbers + iterator, PACKETSIZE, MPI_LONG, i, DATA, MPI_COMM_WORLD, &(requests[nproc - 2 + i]));
-      iterator++;
+      iterator += PACKETSIZE;
     }
     while (iterator < numberssize)
     {
@@ -119,7 +120,7 @@ int main(int argc,char **argv) {
           MPI_Wait(&(requests[nproc - 1 + requestcompleted]), MPI_STATUS_IGNORE);
           // now send some new data portion to this process
           MPI_Isend(numbers + iterator, PACKETSIZE, MPI_LONG, requestcompleted + 1, DATA, MPI_COMM_WORLD, &(requests[nproc - 1 + requestcompleted]));
-          iterator++;
+          iterator += PACKETSIZE;
 
           // now  a corresponding recv
           MPI_Irecv(&(resulttemp[requestcompleted]), 1, MPI_LONG, requestcompleted + 1, RESULT, MPI_COMM_WORLD, &(requests[requestcompleted]));
@@ -162,17 +163,26 @@ int main(int argc,char **argv) {
 	    // before computing the next part start receiving a new data part
 	    MPI_Irecv(sublist2, PACKETSIZE, MPI_LONG, 0, DATA, MPI_COMM_WORLD, &(requests[0]));
 
+      resulttemp[1] = 0;
       unsigned long int slave_result = 0;
       for(int i = 0; i < PACKETSIZE; i++)
       {
         resulttemp[1] += check_prime(sublist1[i]);
+        if (check_prime(sublist1[i])){
+          printf("%ld\n", sublist1[i]);
+        }
       }
 
       // now finish receiving the new part
 	    // and finish sending the previous results back to the master
       MPI_Waitall(2, requests, MPI_STATUSES_IGNORE);
 	    resulttemp[0] = resulttemp[1];
-      sublist1 = sublist2;
+
+      //printf("%ld\n", resulttemp[0]);
+
+      for(int i = 0; i < PACKETSIZE; i++){
+        sublist1[i] = sublist2[i];
+      }
 
 	    // and start sending the results back
       MPI_Isend(&resulttemp[0], 1, MPI_LONG, 0, RESULT, MPI_COMM_WORLD, &(requests[1]));
